@@ -1215,7 +1215,15 @@ def train(cfg: TrainPipelineConfig):
             # save axillary objects such as configs, training step, and rng state
             if accelerator.is_main_process:
                 logging.info(f"Checkpoint policy after step {step}")
-                cfg.policy.pretrained_path = checkpoint_dir
+                # Keep checkpoint references portable inside the experiment tree.
+                # `train_config.json` is commonly launched from the repository root;
+                # serializing an absolute path here makes the checkpoint machine-specific
+                # and defeats copying an experiment directory to another worker. Resolve
+                # relative to the current OpenTau working directory, which is also where
+                # the sbatch launcher starts training and the deployment command starts
+                # the server.
+                cfg.output_dir = Path(os.path.relpath(cfg.output_dir, Path.cwd()))
+                cfg.policy.pretrained_path = Path(os.path.relpath(checkpoint_dir, Path.cwd()))
                 save_checkpoint(checkpoint_dir, step, cfg)
                 if cfg.last_checkpoint_only:
                     # Protect running-best checkpoints from the latest-only prune. Read live each
@@ -1598,7 +1606,8 @@ def train(cfg: TrainPipelineConfig):
                     # No regular checkpoint exists at this step -> save the current weights now.
                     accelerator.save_state(running_best_dir)
                     if accelerator.is_main_process:
-                        cfg.policy.pretrained_path = running_best_dir
+                        cfg.output_dir = Path(os.path.relpath(cfg.output_dir, Path.cwd()))
+                        cfg.policy.pretrained_path = Path(os.path.relpath(running_best_dir, Path.cwd()))
                         save_checkpoint(running_best_dir, step, cfg)
                     accelerator.wait_for_everyone()
                 if accelerator.is_main_process:
