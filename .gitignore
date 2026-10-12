@@ -181,3 +181,5 @@ cython_debug/
 
 # Inference benchmark run artifacts (per-host JSONs, dmon traces, diagnostic dumps)
 benchmark_results/
+
+TensorAuto
