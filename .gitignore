@@ -183,3 +183,5 @@ cython_debug/
 benchmark_results/
 
 TensorAuto
+docs/myself
+docs/old_tacpi

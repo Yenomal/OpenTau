@@ -1,7 +1,5 @@
 """OpenTau server speaking the existing UniVTAC/OpenPI WebSocket protocol."""
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import logging
