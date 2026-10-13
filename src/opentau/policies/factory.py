@@ -203,7 +203,13 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         raise ValueError(f"Policy type '{policy_type}' is not available.")
 
 
-def _load_norm_stats_override(path: str, num_heads: int) -> list[dict[str, dict[str, np.ndarray]]]:
+def _load_norm_stats_override(
+    path: str,
+    num_heads: int,
+    *,
+    state_dim: int,
+    action_dim: int,
+) -> list[dict[str, dict[str, np.ndarray]]]:
     """Load an openpi-style ``norm_stats.json`` and replicate it across every norm head.
 
     Intended for teacher-faithful replay of an openpi checkpoint: it swaps the dataset-derived
@@ -215,6 +221,8 @@ def _load_norm_stats_override(path: str, num_heads: int) -> list[dict[str, dict[
         path: Path to a JSON file shaped ``{"norm_stats": {"state": {...}, "actions": {...}}}``
             with ``mean``/``std`` and optionally ``q01``/``q99`` per feature.
         num_heads: Number of norm-head rows to fill.
+        state_dim: Padded state width expected by the policy.
+        action_dim: Padded action width expected by the policy.
 
     Returns:
         ``num_heads`` copies of the loaded stats, one per row.
@@ -235,20 +243,44 @@ def _load_norm_stats_override(path: str, num_heads: int) -> list[dict[str, dict[
     with open(path) as f:
         raw = json.load(f)["norm_stats"]
 
-    def _feature(name: str) -> dict[str, np.ndarray]:
+    def _feature(name: str, target_dim: int) -> dict[str, np.ndarray]:
         if name not in raw:
             raise KeyError(
                 f"norm_stats_override_path={path!r} has no '{name}' entry under 'norm_stats' "
                 f"(found {sorted(raw)})."
             )
         entry = raw[name]
-        return {
+        result = {
             stat: np.asarray(entry[stat], dtype=np.float32)
             for stat in ("mean", "std", "min", "max", "q01", "q99")
             if stat in entry
         }
+        # OpenPi norm_stats.json stores robust q01/q99 bounds but does not
+        # always include raw min/max. OpenTau's PI05 always constructs the
+        # MIN_MAX discrete-action normalizer, even when CE is disabled, so use
+        # the robust bounds for that required interface when raw extrema are
+        # absent. This preserves the OpenPi quantile convention for action
+        # tokenization and avoids making CE=0 depend on unused raw extrema.
+        if name == "actions":
+            result.setdefault("min", result.get("q01"))
+            result.setdefault("max", result.get("q99"))
+            result = {k: v for k, v in result.items() if v is not None}
+        for stat, value in list(result.items()):
+            if value.ndim == 0 or value.shape[-1] > target_dim:
+                raise ValueError(
+                    f"norm_stats_override_path={path!r} entry {name!r}/{stat!r} has shape "
+                    f"{tuple(value.shape)}, which cannot be padded to {target_dim}."
+                )
+            if value.shape[-1] < target_dim:
+                padded = np.zeros((*value.shape[:-1], target_dim), dtype=np.float32)
+                padded[..., : value.shape[-1]] = value
+                result[stat] = padded
+        return result
 
-    head = {"state": _feature("state"), "actions": _feature("actions")}
+    head = {
+        "state": _feature("state", state_dim),
+        "actions": _feature("actions", action_dim),
+    }
     # One dict per row, each a fresh shallow copy so a later in-place edit of one row's stats
     # cannot silently mutate every other row.
     return [{k: dict(v) for k, v in head.items()} for _ in range(num_heads)]
@@ -387,7 +419,10 @@ def make_policy(
     override_path = getattr(cfg, "norm_stats_override_path", None)
     if override_path:
         per_norm_key_stats = _load_norm_stats_override(
-            override_path, num_heads=len(norm_keys) if norm_keys else 1
+            override_path,
+            num_heads=len(norm_keys) if norm_keys else 1,
+            state_dim=cfg.max_state_dim,
+            action_dim=cfg.max_action_dim,
         )
         norm_keys = norm_keys or [f"override_{i}" for i in range(len(per_norm_key_stats))]
 

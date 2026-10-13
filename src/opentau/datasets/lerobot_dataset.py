@@ -1493,9 +1493,17 @@ class BaseDataset(torch.utils.data.Dataset):
             self._assert_image_in_unit_range(standard_item[out_key], name=out_key, expect_temporal=False)
         standard_item["subgoal_is_pad"] = torch.tensor(pad_subgoals)
 
-        # (3) Response drop — only rolled when subgoals are actually present
-        # (dropping both would remove the primary task signal at once). No
-        # separate ``response_is_pad`` flag: an empty string IS the pad signal.
+        # (3) Response — always emit the string field so default_collate sees
+        # one stable schema when a dataset has no response column. This field
+        # is unused when policy.predict_response=False, but omitting it only
+        # for non-dropped samples makes batch_size > 1 fail with KeyError while
+        # collating a response-bearing sample shape. No separate
+        # ``response_is_pad`` flag: an empty string IS the pad signal.
+        response_raw = item.get("response")
+        standard_item["response"] = response_raw if isinstance(response_raw, str) else ""
+
+        # Response drop — only rolled when subgoals are actually present
+        # (dropping both would remove the primary task signal at once).
         if not pad_subgoals and _roll(self.response_drop_prob):
             standard_item["response"] = ""
 
